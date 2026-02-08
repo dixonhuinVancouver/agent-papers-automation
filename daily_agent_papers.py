@@ -114,6 +114,93 @@ if len(agent_papers) == 0:
     print("\n⚠️  No agent papers found for yesterday. Exiting.")
     sys.exit(0)
 
+# STEP 2.5: Rank papers and select top 5
+print("\n[STEP 2.5/8] Ranking papers and selecting top 5...")
+
+def rank_paper(paper):
+    """Rank a paper based on novelty, technical contribution, practical impact, and relevance."""
+    prompt = f"""Rate this AI agent paper on these dimensions (1-10 scale):
+
+Title: {paper['title']}
+Category: {paper['category']}
+
+Dimensions:
+1. NOVELTY (40%): How new/original is the approach?
+   - High (8-10): Entirely new paradigm/concept
+   - Medium (5-7): Significant improvement or novel combination
+   - Low (1-4): Incremental improvement
+
+2. TECHNICAL (30%): Depth and rigor of technical solution
+   - High (8-10): Strong theoretical foundation, comprehensive experiments
+   - Medium (5-7): Solid approach with reasonable validation
+   - Low (1-4): Limited technical depth
+
+3. PRACTICAL (20%): Real-world applicability
+   - High (8-10): Addresses critical problem, immediately applicable
+   - Medium (5-7): Useful for specific scenarios
+   - Low (1-4): Primarily theoretical
+
+4. RELEVANCE (10%): Alignment with current trends (safety, reasoning, tool use)
+   - High (8-10): Directly addresses major challenges
+   - Medium (5-7): Related to active research areas
+   - Low (1-4): Niche topic
+
+JSON: {{"novelty": float, "technical": float, "practical": float, "relevance": float, "reasoning": "brief explanation"}}"""
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=300
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        if result_text.startswith('```'):
+            result_text = result_text.split('```')[1].replace('json', '').strip()
+        
+        scores = json.loads(result_text)
+        
+        # Calculate weighted total score
+        total_score = (
+            scores['novelty'] * 0.40 +
+            scores['technical'] * 0.30 +
+            scores['practical'] * 0.20 +
+            scores['relevance'] * 0.10
+        )
+        
+        return {
+            'total_score': round(total_score, 2),
+            'scores': scores
+        }
+    except Exception as e:
+        print(f"  ⚠️  Ranking failed for {paper['title'][:50]}: {e}")
+        return {'total_score': 5.0, 'scores': {}}
+
+# Rank all papers
+for paper in agent_papers:
+    ranking = rank_paper(paper)
+    paper['ranking'] = ranking
+    time.sleep(0.5)
+
+# Sort by total score (descending)
+agent_papers.sort(key=lambda p: p['ranking']['total_score'], reverse=True)
+
+# Select top 5 (or all if fewer than 5)
+top_papers = agent_papers[:5]
+honorable_mentions = agent_papers[5:] if len(agent_papers) > 5 else []
+
+print(f"✓ Selected top {len(top_papers)} papers (from {len(agent_papers)} total)")
+for i, paper in enumerate(top_papers, 1):
+    score = paper['ranking']['total_score']
+    print(f"  {i}. {paper['title'][:60]}... (score: {score})")
+
+if honorable_mentions:
+    print(f"✓ {len(honorable_mentions)} honorable mentions will be listed at the end")
+
+# Continue with top papers only
+agent_papers = top_papers
+
 # STEP 3: Get arXiv IDs and download PDFs
 print("\n[STEP 3/7] Downloading PDFs...")
 os.makedirs('pdfs', exist_ok=True)
@@ -311,7 +398,7 @@ md_file = f"{output_dir}/{yesterday}.md"
 with open(md_file, 'w', encoding='utf-8') as f:
     f.write(f"# AI Agent Papers - {yesterday}\n\n")
     f.write("*Daily curated collection of cutting-edge research in AI agents*\n\n")
-    f.write(f"**📊 {len(agent_papers)} verified agent papers** (strict filtering applied)\n\n")
+    f.write(f"**🏆 Top {len(agent_papers)} Most Impactful Papers** (ranked from {len(agent_papers) + len(honorable_mentions)} verified agent papers)\n\n")
     f.write("---\n\n")
     
     for i, paper in enumerate(agent_papers, 1):
@@ -343,6 +430,22 @@ with open(md_file, 'w', encoding='utf-8') as f:
             cat = paper['category'].replace('_', ' ').title()
             f.write(f"\n**Category:** {cat}\n")
         
+        # Add ranking info
+        if paper.get('ranking') and paper['ranking'].get('total_score'):
+            f.write(f"\n**Impact Score:** {paper['ranking']['total_score']}/10\n")
+        
+        f.write("\n---\n\n")
+    
+    # Add honorable mentions section
+    if honorable_mentions:
+        f.write("\n## 📚 Honorable Mentions\n\n")
+        f.write(f"*{len(honorable_mentions)} additional agent papers from {yesterday}*\n\n")
+        
+        for i, paper in enumerate(honorable_mentions, 1):
+            score = paper.get('ranking', {}).get('total_score', 'N/A')
+            cat = paper.get('category', 'unknown').replace('_', ' ').title()
+            f.write(f"{i}. **{paper['title']}** (Score: {score}) - [{cat}]({paper['hf_link']})\n")
+        
         f.write("\n---\n\n")
 
 # Push to GitHub
@@ -356,7 +459,7 @@ subprocess.run([
     cp {md_file} {year}/{month}/ && \
     cp {images_dir}/*.png {year}/{month}/images/ 2>/dev/null || true && \
     git add {year}/ && \
-    git commit -m "Add agent papers for {yesterday} ({len(agent_papers)} papers)
+    git commit -m "Add agent papers for {yesterday} (Top {len(agent_papers)} of {len(agent_papers) + len(honorable_mentions)} papers)
 
 - {len(agent_papers)} verified agent papers with strict filtering
 - Medium-style format with diagrams
